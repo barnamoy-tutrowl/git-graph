@@ -1,1 +1,1 @@
-{ "name": "git-graph", "version": "0.2.0", "description": "A visual git commit graph (branches, merges, tags) in a pane beside the chat", "types": "./types/index.d.ts" }
+{ "name": "git-graph", "version": "0.3.0", "description": "A visual git commit graph (branches, merges, tags) in a pane beside the chat", "types": "./types/index.d.ts" }

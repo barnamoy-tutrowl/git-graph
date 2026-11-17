@@ -12,9 +12,6 @@ type Row = { c: Commit; col: number; incoming: number[]; parents: number[]; thro
 
 const COLORS = ['#6b96e8', '#e07a73', '#5fb27a', '#cba35a', '#a590e0', '#5fb9c4', '#e08cb8', '#dc8f5e']
 const color = (i: number) => COLORS[i % COLORS.length]
-const RH = 30
-const LW = 16
-const PAD = 10
 
 const esc = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -69,29 +66,38 @@ const refs = (d: string) =>
       })
     : []
 
-// One row's lane graph as its own small SVG, so the pane never has to scale a tall drawing down.
-export function rowSvg(r: Row, lanes: number): string {
-  const X = (i: number) => PAD + i * LW
-  const w = PAD * 2 + (lanes - 1) * LW
-  const mid = RH / 2
-  const xc = X(r.col)
-  const g: string[] = []
-  for (const i of r.through) g.push(`<path d="M${X(i)} 0V${RH}" stroke="${color(i)}"/>`)
+// The graph as text cells (like `git log --graph`): no fixed heights or images, so it lays out the same in any pane.
+type Cell = { ch: string; c: string }
+export function cells(r: Row, lanes: number): Cell[] {
+  const out: Cell[] = Array.from({ length: Math.max(1, lanes * 2 - 1) }, () => ({ ch: ' ', c: '' }))
+  const pri: number[] = out.map(() => 0)
+  const put = (p: number, ch: string, c: string, level: number) => {
+    if (level >= pri[p]) {
+      out[p] = { ch, c }
+      pri[p] = level
+    }
+  }
+  const across = (a: number, b: number, c: string) => {
+    for (let p = 2 * Math.min(a, b) + 1; p < 2 * Math.max(a, b); p++) put(p, '─', c, 2)
+  }
+  for (const i of r.through) put(2 * i, '│', color(i), 1)
   for (const i of r.incoming)
-    g.push(`<path d="M${X(i)} 0${i === r.col ? `V${mid}` : `C${X(i)} ${mid} ${xc} 0 ${xc} ${mid}`}" stroke="${color(i)}"/>`)
+    if (i !== r.col) {
+      put(2 * i, i > r.col ? '╯' : '╰', color(i), 3)
+      across(i, r.col, color(i))
+    }
   for (const j of r.parents)
-    g.push(`<path d="M${xc} ${mid}${j === r.col ? `V${RH}` : `C${xc} ${RH} ${X(j)} ${mid} ${X(j)} ${RH}`}" stroke="${color(j)}"/>`)
-  g.push(
-    r.c.p.length > 1
-      ? `<circle cx="${xc}" cy="${mid}" r="4.5" fill="var(--bg)" stroke="${color(r.col)}" stroke-width="2"/>`
-      : `<circle cx="${xc}" cy="${mid}" r="4.5" fill="${color(r.col)}"/>`,
-  )
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${RH}" viewBox="0 0 ${w} ${RH}">` +
-    `<style>:root{--bg:#fff}@media (prefers-color-scheme:dark){:root{--bg:#1c1c1e}}path{fill:none;stroke-width:2;stroke-linecap:round}</style>` +
-    g.join('') +
-    `</svg>`
-  )
+    if (j !== r.col) {
+      put(2 * j, j > r.col ? '╮' : '╭', color(j), 3)
+      across(j, r.col, color(j))
+    }
+  put(2 * r.col, r.c.p.length > 1 ? '○' : '●', color(r.col), 4)
+  return out
+}
+
+const short = (t: string) => {
+  const m = t.match(/^(\d+) (second|minute|hour|day|week|month|year)/)
+  return m ? m[1] + (m[2] === 'month' ? 'mo' : m[2][0]) : t
 }
 
 export const register: Register = on => {
@@ -114,13 +120,13 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Svg, Button } = $.ui.resolve(e) as any
+    const { Box, Text, Button } = $.ui.resolve(e) as any
     await read($, tick)
     const shown = await read($, count)
     const log = await $.process
       .run(['git', 'log', '--all', '--date-order', '-n', String(shown + 1), '--format=%H%x09%P%x09%an%x09%ar%x09%D%x09%s'])
       .catch(() => null)
-    const bar = (more: boolean) => (
+    const bar = (more: boolean, fewer: boolean) => (
       <Box flexDirection="row" gap={1} paddingBottom={1}>
         <Button key="refresh" onPress={() => void update($, tick, n => n + 1)}>
           Refresh
@@ -130,7 +136,7 @@ export const register: Register = on => {
             Show more
           </Button>
         )}
-        {shown > STEP && (
+        {fewer && (
           <Button key="fewer" onPress={() => void update($, count, () => STEP)}>
             Fewer
           </Button>
@@ -140,7 +146,7 @@ export const register: Register = on => {
     if (!log || log.exitCode !== 0)
       return (
         <Box flexDirection="column">
-          {bar(false)}
+          {bar(false, false)}
           <Text dimColor>This folder is not a git repository (or has no commits yet).</Text>
         </Box>
       )
@@ -150,22 +156,22 @@ export const register: Register = on => {
     const { rows, lanes } = layout(commits)
     return (
       <Box flexDirection="column">
-        {bar(more)}
+        {bar(more, shown > STEP && commits.length > STEP)}
         {rows.map(r => (
-          <Box flexDirection="row" alignItems="center" height={RH} key={r.c.h}>
-            <Svg source={rowSvg(r, lanes)} alt="" />
-            <Box flexDirection="row" gap={1} flexGrow={1} overflow="hidden">
-              {refs(r.c.d).map(ref => (
-                <Text color={ref.fill} bold size="caption">
-                  {ref.name}
-                </Text>
-              ))}
-              <Text>{r.c.s}</Text>
-            </Box>
-            <Text dimColor size="caption">
-              {r.c.t.replace(' ago', '')}
+          <Text key={r.c.h} wrap="truncate-end">
+            <Text mono>
+              {cells(r, lanes).map(x => (x.c ? <Text color={x.c}>{x.ch}</Text> : x.ch))}
             </Text>
-          </Box>
+            {'  '}
+            <Text dimColor>{short(r.c.t)}</Text>
+            {'  '}
+            {refs(r.c.d).map(ref => (
+              <Text color={ref.fill} bold>
+                {ref.name + ' '}
+              </Text>
+            ))}
+            {r.c.s}
+          </Text>
         ))}
       </Box>
     )
